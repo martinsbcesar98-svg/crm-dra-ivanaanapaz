@@ -81,6 +81,17 @@ window.CRM_CONFIG = {
   .btn.ghost{background:transparent}
   .btn.wa{background:#1f6b43;color:#F4EEDF;border-color:#1f6b43}
   .btn.wa:hover{filter:brightness(1.1);border-color:#1f6b43}
+  .btn.dgr{color:var(--crit);border-color:var(--crit)}
+  .btn.dgr:hover{background:var(--crit);color:#F4EEDF}
+  .search{width:100%;padding:12px 16px;margin-bottom:16px;border:1px solid var(--hair);border-radius:11px;
+    background:var(--panel-2);color:var(--ink);font-size:.94rem}
+  .search:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px var(--gold-tint)}
+  .danger{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+    margin-top:22px;padding:15px 18px;border:1px solid var(--crit);border-radius:var(--radius);
+    background:var(--crit-bg)}
+  .danger .dt{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .danger .dt b{color:var(--crit);font-size:.92rem}
+  .danger .dt span{font-size:.8rem;color:var(--ink-soft)}
 
   /* ---------- Cards / stats ---------- */
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:14px;margin-bottom:26px}
@@ -303,8 +314,11 @@ window.CRM_CONFIG = {
   // ============ PERSISTÊNCIA (guarda no navegador) ============
   var STORE="crm_ivana_v1", loading=false;
   var canPersist=(function(){ try{ localStorage.setItem("__t","1"); localStorage.removeItem("__t"); return true; }catch(e){ return false; } })();
+  var avisoEspaco=false;
   function persist(){ if(loading) return;
-    if(canPersist){ try{ localStorage.setItem(STORE, JSON.stringify(snapshot())); }catch(e){} }
+    if(canPersist){ try{ localStorage.setItem(STORE, JSON.stringify(snapshot())); avisoEspaco=false; }
+      catch(e){ if(!avisoEspaco){ avisoEspaco=true;
+        try{ toast("⚠ Sem espaço para guardar neste dispositivo — exporte uma cópia e remova anexos antigos"); }catch(_){} } } }
     cloudSave(); }
 
   // ============ NUVEM (login + sincronização) — ativa só com CRM_CONFIG ============
@@ -324,6 +338,12 @@ window.CRM_CONFIG = {
         .then(function(r){ if(r.error) toast("⚠ Falha ao sincronizar — verifique a internet"); });
     },800);
   }
+  // fecho automático de sessão após 30 min sem atividade (só no modo online)
+  var IDLE_MS=30*60*1000, idleT=null;
+  function armIdle(){ if(!CLOUD.on||!CLOUD.user) return; clearTimeout(idleT);
+    idleT=setTimeout(function(){ CLOUD.client.auth.signOut().then(function(){ location.reload(); }); }, IDLE_MS); }
+  document.addEventListener("pointerdown",armIdle);
+  document.addEventListener("keydown",armIdle);
   function loginErr(m){ var e=document.getElementById("loginErr"); e.textContent=m; e.classList.add("show"); }
   function showLogin(){ document.getElementById("login").classList.add("open"); }
   function hideLogin(){ document.getElementById("login").classList.remove("open"); }
@@ -335,7 +355,7 @@ window.CRM_CONFIG = {
         if(r.data&&r.data.dados&&aplicar(r.data.dados)){ /* dados da nuvem */ }
         else if(!load()){ seed(); }
         loading=false;
-        hideLogin(); updateBadges(); render("inicio"); cloudSave();
+        hideLogin(); updateBadges(); render("inicio"); cloudSave(); armIdle();
       });
   }
   function cloudBoot(){
@@ -460,6 +480,11 @@ window.CRM_CONFIG = {
   function todayFloor(){return Math.floor(Date.now()/864e5)}
   function saudacao(){var h=new Date().getHours();return h<12?"Bom dia":h<20?"Boa tarde":"Boa noite"}
   function primeiro(nome){return (nome||"").trim().split(" ")[0]}
+  // sessão ainda gera receita? (exclui canceladas, perdas de reserva e faltas)
+  function aindaCobra(s){return s.estado!=="cancelada"&&s.estado!=="perda_reserva"&&s.estado!=="falta"}
+  // compara com o dia de HOJE na hora local (não UTC)
+  function mesmoDiaHoje(frac){var a=dataObj(frac),b=new Date();
+    return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate()}
   function byId(id){return state.patients.filter(function(x){return x.id===id})[0]}
 
   // ---- Mensagens (enviadas por WhatsApp, a partir da app) ----
@@ -500,7 +525,7 @@ window.CRM_CONFIG = {
     document.getElementById("bg-lem").textContent=lembretes().length;
   }
   function setView(v){
-    persist();
+    persist(); updateBadges();
     state.nextView=v;
     [].forEach.call(document.querySelectorAll("#nav button"),function(b){b.classList.toggle("active",b.dataset.view===v)});
     render(v);
@@ -548,17 +573,22 @@ window.CRM_CONFIG = {
         '<button class="btn sm" onclick="APP.verTermos()">👁 Ver como o paciente recebe</button></div></div>',
         '<button class="btn sm" onclick="APP.verTermos()">Pré-visualizar</button>');
   }
-  APP.reporDemo=function(){ if(!confirm("Repor os dados de demonstração? Isto apaga o que introduziu.")) return;
-    state.patients=[]; state.currentPatient=null; state.config.terms=TERMOS_DEFAULT.slice();
-    loading=true; seed(); loading=false; persist(); setView("inicio"); toast("Demonstração reposta"); };
+  APP.reporDemo=function(){
+    APP.confirmar("Repor demonstração",
+      "Isto apaga <b>todos os dados que introduziu</b> e volta aos pacientes de exemplo. Não pode ser desfeito.",
+      "Repor tudo",
+      function(){
+        state.patients=[]; state.currentPatient=null; state.config.terms=TERMOS_DEFAULT.slice();
+        loading=true; seed(); loading=false; persist(); setView("inicio"); toast("Demonstração reposta");
+      }); };
 
   // ---- INÍCIO ----
   function renderInicio(){
     var sess=allSessions();
-    var hojeSess=sess.filter(function(x){return Math.floor(x.s.data)===todayFloor() && x.s.estado!=="cancelada"});
+    var hojeSess=sess.filter(function(x){return mesmoDiaHoje(x.s.data) && x.s.estado!=="cancelada"});
     var aConfirmar=sess.filter(function(x){return x.s.estado==="agendada"});
-    var pendentes=sess.filter(function(x){return x.s.pagamento.estado==="pendente" && x.s.estado!=="cancelada"});
-    var receber=sess.filter(function(x){return x.s.pagamento.estado!=="liquidado" && x.s.estado!=="cancelada"})
+    var pendentes=sess.filter(function(x){return x.s.pagamento.estado==="pendente" && aindaCobra(x.s)});
+    var receber=sess.filter(function(x){return x.s.pagamento.estado!=="liquidado" && aindaCobra(x.s)})
                     .reduce(function(a,x){return a+(x.s.pagamento.estado==="pendente"?x.s.pagamento.total:x.s.pagamento.saldo)},0);
     var proximas=sess.filter(function(x){return x.s.data>=todayFloor()&&x.s.estado!=="cancelada"&&x.s.estado!=="realizada"})
                      .sort(function(a,b){return a.s.data-b.s.data}).slice(0,5);
@@ -579,8 +609,14 @@ window.CRM_CONFIG = {
   }
 
   // ---- PACIENTES ----
+  APP.pesquisar=function(v){ state.q=v; renderPacientes();
+    var i=document.getElementById("q"); if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); } };
   function renderPacientes(){
-    var rows=state.patients.map(function(p){
+    var q=(state.q||"").toLowerCase().trim();
+    var lista=q ? state.patients.filter(function(p){
+      return p.nome.toLowerCase().indexOf(q)>=0 || (p.telefone||"").replace(/\s/g,"").indexOf(q.replace(/\s/g,""))>=0;
+    }) : state.patients;
+    var rows=lista.map(function(p){
       var prox=p.sessoes.filter(function(s){return s.data>=todayFloor()&&s.estado!=="cancelada"&&s.estado!=="realizada"}).sort(function(a,b){return a.data-b.data})[0];
       return '<div class="row clickable" onclick="APP.abrir(\''+p.id+'\')">'+
         '<div class="avatar">'+inicial(p.nome)+'</div>'+
@@ -590,7 +626,9 @@ window.CRM_CONFIG = {
     }).join("");
     main.innerHTML=
       head("Pacientes",state.patients.length+" registados",'<button class="btn gold" onclick="APP.novoPaciente()">＋ Novo paciente</button>')+
-      panel("Todos os pacientes", rows||emptyBox("Ainda sem pacientes. Comece por adicionar um."));
+      '<input class="search" id="q" type="search" placeholder="🔍 Pesquisar por nome ou contacto…" value="'+esc(state.q||"")+'" oninput="APP.pesquisar(this.value)">'+
+      panel(q?lista.length+" resultado(s) para “"+esc(state.q)+"”":"Todos os pacientes",
+        rows||(q?emptyBox("Nenhum paciente corresponde à pesquisa."):emptyBox("Ainda sem pacientes. Comece por adicionar um.")));
   }
 
   // ---- AGENDA ----
@@ -610,7 +648,7 @@ window.CRM_CONFIG = {
     var sess=allSessions().filter(function(x){return x.s.estado!=="cancelada"});
     var recebido=sess.filter(function(x){return x.s.pagamento.estado==="liquidado"}).reduce(function(a,x){return a+x.s.pagamento.total},0)
                 +sess.filter(function(x){return x.s.pagamento.estado==="reserva_paga"}).reduce(function(a,x){return a+x.s.pagamento.reserva},0);
-    var aReceber=sess.filter(function(x){return x.s.pagamento.estado!=="liquidado"}).reduce(function(a,x){return a+(x.s.pagamento.estado==="pendente"?x.s.pagamento.total:x.s.pagamento.saldo)},0);
+    var aReceber=sess.filter(function(x){return x.s.pagamento.estado!=="liquidado" && aindaCobra(x.s)}).reduce(function(a,x){return a+(x.s.pagamento.estado==="pendente"?x.s.pagamento.total:x.s.pagamento.saldo)},0);
     var rows=sess.sort(function(a,b){return b.s.data-a.s.data}).map(function(x){
       var pg=x.s.pagamento;
       return '<div class="row">'+
@@ -659,11 +697,12 @@ window.CRM_CONFIG = {
     var L=[];
     allSessions().forEach(function(x){
       var s=x.s, dt=s.data;
-      if(s.estado!=="cancelada" && s.estado!=="realizada" && dt>=todayFloor() && dt<=todayFloor()+1){
+      var msAte=s.data*864e5-Date.now();
+      if(s.estado!=="cancelada" && s.estado!=="realizada" && msAte>=0 && msAte<=864e5){
         L.push({acao:"lembrete",pid:x.p.id,sid:s.id,txt:"Lembrete de sessão — "+x.p.nome,quando:fmtData(dt),
           det:"Enviar aviso 24h antes. "+(s.modalidade==="online"?"Consulta online":"Consulta presencial"),cls:"p-info"});
       }
-      if(s.pagamento.estado==="pendente" && s.estado!=="cancelada"){
+      if(s.pagamento.estado==="pendente" && aindaCobra(s)){
         L.push({acao:"reserva",pid:x.p.id,sid:s.id,txt:"Reserva por pagar — "+x.p.nome,quando:fmtData(dt),
           det:"Aguarda comprovativo de 50% ("+kz(s.pagamento.reserva)+") para confirmar.",cls:"p-warn"});
       }
@@ -731,7 +770,8 @@ window.CRM_CONFIG = {
         '<dt>Idade</dt><dd>'+idade(p.nascimento)+'</dd>'+
         '<dt>Contacto</dt><dd>'+esc(p.telefone)+'</dd>'+
         '<dt>1.ª consulta</dt><dd>'+(p.primeira?fmtData(p.primeira).split(" · ")[0]:"—")+'</dd>'+
-        '</dl></div>')+
+        '</dl></div>',
+        '<button class="btn sm" onclick="APP.editarPaciente(\''+p.id+'\')">✎ Editar</button>')+
       panel("Termos e Condições",
         '<div style="padding:14px;display:grid;gap:11px">'+
         (p.termos
@@ -742,11 +782,49 @@ window.CRM_CONFIG = {
             '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn wa sm" onclick="APP.waTermos(\''+p.id+'\',true)">✆ Enviar por WhatsApp &amp; registar</button>'+
             '<button class="btn sm" onclick="APP.copiarTermos(\''+p.id+'\')">⧉ Copiar</button>'+
             '<button class="btn sm" onclick="APP.enviarTermos(\''+p.id+'\')">✓ Só registar aceite</button></div>')+
-        '</div>');
+        '</div>')+
+    '</div>'+
+    '<div class="danger">'+
+      '<div class="dt"><b>Apagar este paciente</b><span>Remove a ficha, todas as sessões, notas clínicas e comprovativos. Esta ação não pode ser desfeita.</span></div>'+
+      '<button class="btn dgr sm" onclick="APP.apagarPaciente(\''+p.id+'\')">🗑 Apagar paciente</button>'+
+    '</div>';
   }
 
   APP.enviarTermos=function(id){ var p=state.patients.filter(function(x){return x.id===id})[0];
     p.termos=true; p.termosData=hoje(); toast("Boas-vindas enviadas — aceite registado"); renderDetalhe(); updateBadges(); };
+
+  APP.editarPaciente=function(pid){
+    var p=byId(pid); if(!p) return;
+    var opts=["lead","ativo","inativo","alta"].map(function(k){
+      return '<option value="'+k+'"'+(p.estado===k?" selected":"")+'>'+ESTADO_PAC[k][0]+'</option>'}).join("");
+    openModal(modal("Editar dados do paciente",
+      '<div class="field"><label>Nome completo</label><input id="e_nome" value="'+esc(p.nome)+'"></div>'+
+      '<div class="frow"><div class="field"><label>Data de nascimento</label><input id="e_nasc" type="date" value="'+(p.nascimento||"")+'"></div>'+
+      '<div class="field"><label>Contacto telefónico</label><input id="e_tel" value="'+esc(p.telefone)+'"></div></div>'+
+      '<div class="field"><label>Estado do paciente</label><select id="e_est">'+opts+'</select></div>',
+      '<button class="btn ghost" onclick="APP.close()">Cancelar</button><button class="btn gold" onclick="APP.salvarEdicaoPaciente(\''+pid+'\')">Guardar alterações</button>'));
+  };
+  APP.salvarEdicaoPaciente=function(pid){
+    var p=byId(pid); if(!p) return;
+    var nome=val("e_nome"), tel=val("e_tel");
+    if(!nome||!tel){ toast("Nome e contacto são obrigatórios"); return; }
+    p.nome=nome; p.telefone=tel; p.nascimento=val("e_nasc")||p.nascimento;
+    p.estado=val("e_est")||p.estado;
+    persist(); APP.close(); toast("Dados atualizados"); renderDetalhe(); updateBadges();
+  };
+
+  APP.apagarPaciente=function(id){
+    var p=byId(id); if(!p) return;
+    var n=(p.sessoes||[]).length;
+    APP.confirmar("Apagar paciente",
+      "Apagar <b>"+esc(p.nome)+"</b>?<br><br>Remove a ficha, <b>"+n+" sessão(ões)</b>, todas as notas clínicas e comprovativos. <b>Esta ação não pode ser desfeita.</b>",
+      "Apagar definitivamente",
+      function(){
+        state.patients=state.patients.filter(function(x){return x.id!==id});
+        state.currentPatient=null; persist(); updateBadges();
+        toast("Paciente \""+p.nome+"\" apagado"); setView("pacientes");
+      });
+  };
 
   function tabProntuario(p){
     return panel("Enquadramento inicial",
@@ -865,10 +943,17 @@ window.CRM_CONFIG = {
 
   APP.cancelar=function(pid,sid){ var r=find(pid,sid), s=r.s;
     var horas=(s.data - Date.now()/864e5)*24;
-    if(horas<24 && s.pagamento.estado!=="pendente"){ s.estado="perda_reserva";
-      toast("Cancelada com menos de 24h — perda da reserva ("+kz(s.pagamento.reserva)+"), conforme os Termos"); }
-    else { s.estado="cancelada"; toast("Consulta cancelada"); }
-    refresh(); if(state.currentPatient) renderDetalhe();
+    var perde = horas<24 && s.pagamento.estado!=="pendente";
+    APP.confirmar("Cancelar consulta",
+      perde
+        ? "Faltam <b>menos de 24 horas</b> para esta consulta. Conforme os Termos, o cancelamento implica a <b>perda da reserva ("+kz(s.pagamento.reserva)+")</b>. Continuar?"
+        : "Cancelar a consulta de <b>"+fmtData(s.data)+"</b>?",
+      perde ? "Cancelar (perde a reserva)" : "Cancelar consulta",
+      function(){
+        if(perde){ s.estado="perda_reserva"; toast("Cancelada — perda da reserva, conforme os Termos"); }
+        else { s.estado="cancelada"; toast("Consulta cancelada"); }
+        refresh(); if(state.currentPatient) renderDetalhe();
+      });
   };
   function find(pid,sid){ var p=state.patients.filter(function(x){return x.id===pid})[0];
     var s=p.sessoes.filter(function(x){return x.id===sid})[0]; return {p:p,s:s}; }
@@ -892,8 +977,14 @@ window.CRM_CONFIG = {
   };
   APP.importar=function(inp){ var f=inp.files&&inp.files[0]; if(!f)return;
     var r=new FileReader(); r.onload=function(){ try{ var d=JSON.parse(r.result);
-      loading=true; aplicar(d); loading=false; persist();
-      toast("Dados importados"); state.currentPatient=null; setView("inicio");
+      if(!d||!d.patients){ toast("Ficheiro inválido"); return; }
+      APP.confirmar("Importar cópia de segurança",
+        "A cópia contém <b>"+d.patients.length+" paciente(s)</b>. Ao importar, <b>substitui os dados atuais</b> por estes. Continuar?",
+        "Importar e substituir",
+        function(){
+          loading=true; aplicar(d); loading=false; persist();
+          toast("Dados importados"); state.currentPatient=null; setView("inicio");
+        });
     }catch(e){ toast("Ficheiro inválido"); } }; r.readAsText(f); inp.value=""; };
   APP.salvarPrecos=function(){ var a=parseInt(val("cfg_av"),10), b=parseInt(val("cfg_ac"),10);
     if(a>0)PLANOS.avulsa.preco=a; if(b>0)PLANOS.acompanhamento.preco=b; persist(); toast("Valores atualizados"); renderDefinicoes(); };
@@ -913,6 +1004,17 @@ window.CRM_CONFIG = {
   APP.close=function(){ overlay.classList.remove("open"); host.innerHTML=""; };
   overlay.addEventListener("click",function(e){ if(e.target===overlay) APP.close(); });
   document.addEventListener("keydown",function(e){ if(e.key==="Escape"&&overlay.classList.contains("open")) APP.close(); });
+
+  // confirmação da própria app (substitui o confirm() nativo do navegador)
+  var confirmCb=null;
+  APP.confirmar=function(titulo,corpo,txtBtn,cb){
+    confirmCb=cb;
+    openModal(modal(titulo,
+      '<p style="margin:0;font-size:.93rem;line-height:1.6">'+corpo+'</p>',
+      '<button class="btn ghost" onclick="APP.close()">Voltar</button>'+
+      '<button class="btn dgr" onclick="APP.confirmarOk()">'+txtBtn+'</button>'));
+  };
+  APP.confirmarOk=function(){ var f=confirmCb; confirmCb=null; APP.close(); if(f) f(); };
 
   APP.novoPaciente=function(){
     openModal(modal("Novo paciente",
@@ -994,12 +1096,7 @@ window.CRM_CONFIG = {
   });
 
   // ============ REPOR DEMONSTRAÇÃO ============
-  document.getElementById("resetBtn").addEventListener("click",function(){
-    if(!confirm("Repor os dados de demonstração? Isto apaga o que introduziu.")) return;
-    state.patients=[]; state.currentPatient=null;
-    loading=true; seed(); loading=false; persist();
-    setView("inicio"); toast("Demonstração reposta");
-  });
+  document.getElementById("resetBtn").addEventListener("click",function(){ APP.reporDemo(); });
 
   // ============ ARRANQUE ============
   if(cloudInit()){
