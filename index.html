@@ -318,27 +318,39 @@ window.CRM_CONFIG = {
   var canPersist=(function(){ try{ localStorage.setItem("__t","1"); localStorage.removeItem("__t"); return true; }catch(e){ return false; } })();
   var avisoEspaco=false;
   function persist(){ if(loading) return;
-    if(canPersist){ try{ localStorage.setItem(STORE, JSON.stringify(snapshot())); avisoEspaco=false; }
+    // A7: em modo nuvem os dados clinicos NAO tocam no disco deste dispositivo.
+    if(canPersist && !CLOUD.on){ try{ localStorage.setItem(STORE, JSON.stringify(snapshot())); avisoEspaco=false; }
       catch(e){ if(!avisoEspaco){ avisoEspaco=true;
         try{ toast("⚠ Sem espaço para guardar neste dispositivo — exporte uma cópia e remova anexos antigos"); }catch(_){} } } }
     cloudSave(); }
 
   // ============ NUVEM (login + sincronização) — ativa só com CRM_CONFIG ============
   var CLOUD={on:false,client:null,user:null,timer:null};
+  var cloudReadOk=false, pendenteSync=false;
   function cloudInit(){
     var cfg=window.CRM_CONFIG;
     if(!cfg||!cfg.url||!cfg.key||!window.supabase) return false;
     try{ CLOUD.client=window.supabase.createClient(cfg.url,cfg.key); CLOUD.on=true; return true; }
     catch(e){ return false; }
   }
-  function cloudSave(){
-    if(!CLOUD.on||!CLOUD.user) return;
+  // Invariante: nunca escrever um objecto completo que nao veio de uma leitura bem sucedida.
+  function cloudUpsert(){
+    return CLOUD.client.from("crm_dados")
+      .upsert({user_id:CLOUD.user.id, dados:snapshot(), atualizado_em:new Date().toISOString()})
+      .then(function(r){ if(r.error){ toast("⚠ Falha ao sincronizar — verifique a Internet"); }
+                         else { pendenteSync=false; } })
+      .catch(function(){ toast("⚠ Falha ao sincronizar — verifique a Internet"); });
+  }
+  function cloudSave(){                       // com debounce
+    if(!CLOUD.on||!CLOUD.user||!cloudReadOk) return;
+    pendenteSync=true;
     clearTimeout(CLOUD.timer);
-    CLOUD.timer=setTimeout(function(){
-      CLOUD.client.from("crm_dados")
-        .upsert({user_id:CLOUD.user.id, dados:snapshot(), atualizado_em:new Date().toISOString()})
-        .then(function(r){ if(r.error) toast("⚠ Falha ao sincronizar — verifique a internet"); });
-    },800);
+    CLOUD.timer=setTimeout(cloudUpsert,800);
+  }
+  function cloudSaveNow(){                    // imediato, dispensa o debounce
+    if(!CLOUD.on||!CLOUD.user||!cloudReadOk) return;
+    clearTimeout(CLOUD.timer);
+    cloudUpsert();
   }
   // fecho automático de sessão após 30 min sem atividade (só no modo online)
   var IDLE_MS=30*60*1000, idleT=null;
@@ -352,15 +364,26 @@ window.CRM_CONFIG = {
   function cloudFetch(){
     CLOUD.client.from("crm_dados").select("dados").eq("user_id",CLOUD.user.id).maybeSingle()
       .then(function(r){
-        if(r.error){ loginErr("Não foi possível carregar os dados. Tente novamente."); return; }
+        if(r.error){ cloudReadOk=false;
+          loginErr("Não foi possível carregar os dados. Verifique a ligação e recarregue."); return; }
+        cloudReadOk=true;                                  // leitura confirmada
         loading=true;
-        if(r.data&&r.data.dados&&aplicar(r.data.dados)){ /* dados da nuvem */ }
-        else if(!load()){ seed(); }
+        try{ localStorage.removeItem(STORE); }catch(e){}   // purga cache de versoes anteriores (A7)
+        if(r.data && r.data.dados){ aplicar(r.data.dados); }
+        else {                                             // conta nova: arranca vazia (A17)
+          state.patients=[]; state.currentPatient=null;
+          state.config={ terms:TERMOS_DEFAULT.slice() };
+          PLANOS.avulsa.preco=15000; PLANOS.acompanhamento.preco=35000;
+        }
         loading=false;
-        hideLogin(); updateBadges(); render("inicio"); cloudSave(); armIdle();
-      });
+        hideLogin(); updateBadges(); render("inicio"); armIdle();
+        if(!r.data) cloudSaveNow();                        // so cria a linha da conta nova
+      })
+      .catch(function(){ cloudReadOk=false;
+        loginErr("Falha de ligação. Verifique a Internet e recarregue."); });
   }
   function cloudBoot(){
+    var rb=document.getElementById("resetBtn"); if(rb) rb.style.display="none";  // A17
     showLogin();
     var btn=document.getElementById("loginBtn");
     var tenta=function(){
@@ -563,7 +586,7 @@ window.CRM_CONFIG = {
             '<button class="btn sm" onclick="document.getElementById(\'imp\').click()">⬆ Importar cópia</button>'+
             '<input id="imp" type="file" accept="application/json" style="display:none" onchange="APP.importar(this)">'+
           '</div>'+
-          '<button class="btn ghost sm" style="justify-self:start;color:var(--crit)" onclick="APP.reporDemo()">↺ Repor demonstração</button>'+
+          (CLOUD.on?'':'<button class="btn ghost sm" style="justify-self:start;color:var(--crit)" onclick="APP.reporDemo()">↺ Repor demonstração</button>')+
           '</div>')+
       '</div>'+
       '<div style="height:22px"></div>'+
@@ -576,6 +599,7 @@ window.CRM_CONFIG = {
         '<button class="btn sm" onclick="APP.verTermos()">Pré-visualizar</button>');
   }
   APP.reporDemo=function(){
+    if(CLOUD.on){ toast("Indisponível em modo online"); return; }
     APP.confirmar("Repor demonstração",
       "Isto apaga <b>todos os dados que introduziu</b> e volta aos pacientes de exemplo. Não pode ser desfeito.",
       "Repor tudo",
@@ -1100,8 +1124,23 @@ window.CRM_CONFIG = {
   // ============ REPOR DEMONSTRAÇÃO ============
   document.getElementById("resetBtn").addEventListener("click",function(){ APP.reporDemo(); });
 
+  // Aviso se houver trabalho por sincronizar
+  window.addEventListener("beforeunload",function(e){
+    if(pendenteSync){ e.preventDefault(); e.returnValue=""; }
+  });
+  // Sair de um campo de notas grava ja, sem esperar os 800 ms ("blur" nao borbulha -> captura)
+  document.addEventListener("blur",function(e){
+    if(e.target && e.target.tagName==="TEXTAREA" && pendenteSync) cloudSaveNow();
+  },true);
+
   // ============ ARRANQUE ============
-  if(cloudInit()){
+  if(window.CRM_CONFIG && !window.supabase){
+    // A23: configurado para a nuvem mas a biblioteca nao carregou.
+    // Falhar FECHADO: nunca abrir sem autenticacao nem escrever dados no disco.
+    document.getElementById("login").classList.add("open");
+    loginErr("Falha ao carregar um componente da aplica\u00e7\u00e3o. Recarregue a p\u00e1gina. Se persistir, contacte o suporte.");
+    document.getElementById("loginBtn").disabled=true;
+  } else if(cloudInit()){
     cloudBoot();                      // online: login primeiro, depois dados da nuvem
   } else {
     if(!load()){ loading=true; seed(); loading=false; persist(); }
