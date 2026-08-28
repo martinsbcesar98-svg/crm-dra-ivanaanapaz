@@ -327,6 +327,7 @@ window.CRM_CONFIG = {
   // ============ NUVEM (login + sincronização) — ativa só com CRM_CONFIG ============
   var CLOUD={on:false,client:null,user:null,timer:null};
   var cloudReadOk=false, pendenteSync=false;
+  var ultimoGravado=null, versaoLocal=null, emConflito=false;   // A8 + A24
   function cloudInit(){
     var cfg=window.CRM_CONFIG;
     if(!cfg||!cfg.url||!cfg.key||!window.supabase) return false;
@@ -335,11 +336,43 @@ window.CRM_CONFIG = {
   }
   // Invariante: nunca escrever um objecto completo que nao veio de uma leitura bem sucedida.
   function cloudUpsert(){
-    return CLOUD.client.from("crm_dados")
-      .upsert({user_id:CLOUD.user.id, dados:snapshot(), atualizado_em:new Date().toISOString()})
-      .then(function(r){ if(r.error){ toast("⚠ Falha ao sincronizar — verifique a Internet"); }
-                         else { pendenteSync=false; } })
-      .catch(function(){ toast("⚠ Falha ao sincronizar — verifique a Internet"); });
+    if(emConflito) return Promise.resolve();
+    var snap=snapshot(), corpo=JSON.stringify(snap);
+    if(corpo===ultimoGravado){ pendenteSync=false; return Promise.resolve(); }  // A24: render sem alteracao nao escreve
+
+    var q = (versaoLocal===null)
+      ? CLOUD.client.from("crm_dados").insert({user_id:CLOUD.user.id, dados:snap}).select("versao")
+      : CLOUD.client.from("crm_dados").update({dados:snap})                     // A8: o servidor incrementa a versao
+          .eq("user_id",CLOUD.user.id).eq("versao",versaoLocal).select("versao");
+
+    return q.then(function(r){
+      if(r.error){
+        if(r.error.code==="23505") return diagnosticarConflito();               // outro dispositivo criou a linha
+        toast("⚠ Falha ao sincronizar — verifique a Internet"); return;
+      }
+      if(!r.data || !r.data.length) return diagnosticarConflito();              // 0 linhas: investigar porque
+      versaoLocal=r.data[0].versao; ultimoGravado=corpo; pendenteSync=false;
+    }).catch(function(){ toast("⚠ Falha ao sincronizar — verifique a Internet"); });
+  }
+  // Distingue conflito de versao, linha ausente e falha de ligacao. pendenteSync fica true de proposito:
+  // o beforeunload avisa se a utilizadora tentar fechar antes de exportar.
+  function diagnosticarConflito(){
+    return CLOUD.client.from("crm_dados").select("versao").eq("user_id",CLOUD.user.id).maybeSingle()
+      .then(function(r){
+        if(r.error){ toast("⚠ Não foi possível gravar. Verifique a ligação."); return; }
+        emConflito=true;
+        modalConflito(r.data ? "outro" : "ausente");
+      }).catch(function(){ toast("⚠ Não foi possível gravar. Verifique a ligação."); });
+  }
+  function modalConflito(tipo){
+    var txt = (tipo==="outro")
+      ? "Os seus dados foram alterados <b>noutro dispositivo</b>. As alterações que fez aqui <b>não foram gravadas</b>."
+      : "O registo já não está acessível nesta conta. As alterações que fez aqui <b>não foram gravadas</b>.";
+    openModal(modal("Alterações não gravadas",
+      '<p style="margin:0;font-size:.93rem;line-height:1.6">'+txt+
+      ' Pode guardar uma cópia antes de recarregar.</p>',
+      '<button class="btn gold" onclick="APP.exportar()">⬇ Exportar as minhas alterações</button>'+
+      '<button class="btn dgr" onclick="location.reload()">Recarregar com os dados do servidor</button>'));
   }
   function cloudSave(){                       // com debounce
     if(!CLOUD.on||!CLOUD.user||!cloudReadOk) return;
@@ -362,18 +395,22 @@ window.CRM_CONFIG = {
   function showLogin(){ document.getElementById("login").classList.add("open"); }
   function hideLogin(){ document.getElementById("login").classList.remove("open"); }
   function cloudFetch(){
-    CLOUD.client.from("crm_dados").select("dados").eq("user_id",CLOUD.user.id).maybeSingle()
+    CLOUD.client.from("crm_dados").select("dados,versao").eq("user_id",CLOUD.user.id).maybeSingle()
       .then(function(r){
         if(r.error){ cloudReadOk=false;
           loginErr("Não foi possível carregar os dados. Verifique a ligação e recarregue."); return; }
         cloudReadOk=true;                                  // leitura confirmada
+        versaoLocal = r.data ? r.data.versao : null;       // A8: base da concorrencia optimista
         loading=true;
         try{ localStorage.removeItem(STORE); }catch(e){}   // purga cache de versoes anteriores (A7)
-        if(r.data && r.data.dados){ aplicar(r.data.dados); }
-        else {                                             // conta nova: arranca vazia (A17)
+        if(r.data && r.data.dados){
+          aplicar(r.data.dados);
+          ultimoGravado=JSON.stringify(snapshot());        // A24: base de comparacao verdadeira
+        } else {                                           // conta nova: arranca vazia (A17)
           state.patients=[]; state.currentPatient=null;
           state.config={ terms:TERMOS_DEFAULT.slice() };
           PLANOS.avulsa.preco=15000; PLANOS.acompanhamento.preco=35000;
+          ultimoGravado=null;                              // null: o insert da conta nova nao e deduplicado
         }
         loading=false;
         hideLogin(); updateBadges(); render("inicio"); armIdle();
