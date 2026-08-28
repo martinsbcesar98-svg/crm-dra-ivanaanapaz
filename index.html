@@ -227,6 +227,13 @@ window.CRM_CONFIG = {
   .login .err.show{display:block}
   .login .btn{width:100%;justify-content:center;padding:12px}
   .cloudtag{display:inline-flex;align-items:center;gap:6px;font-size:.68rem;opacity:.65;margin-top:10px}
+  .pane{display:none} .pane.on{display:block}
+  .linkbtn{background:none;border:0;color:var(--gold-deep);font-family:inherit;font-size:.82rem;
+    text-decoration:underline;cursor:pointer;padding:10px 4px 0;font-weight:600}
+  .linkbtn:disabled{opacity:.5;cursor:default;text-decoration:none}
+  .login .okmsg{display:none;color:var(--ok);background:var(--ok-bg);border-radius:8px;padding:9px 12px;
+    font-size:.82rem;margin-bottom:12px;text-align:left;line-height:1.5}
+  .login .okmsg.show{display:block}
 
   @media(max-width:720px){
     .app{grid-template-columns:1fr}
@@ -282,9 +289,26 @@ window.CRM_CONFIG = {
     <h2 class="serif">Consultório Ivana Anapaz</h2>
     <div class="ls">Acesso reservado · Psicologia Clínica</div>
     <div class="err" id="loginErr"></div>
-    <div class="field"><label>E-mail</label><input id="loginEmail" type="email" autocomplete="username" placeholder="o seu e-mail"></div>
-    <div class="field"><label>Senha</label><input id="loginPass" type="password" autocomplete="current-password" placeholder="a sua senha"></div>
-    <button class="btn primary" id="loginBtn">Entrar</button>
+    <div class="okmsg" id="loginOk"></div>
+
+    <div class="pane on" id="paneLogin">
+      <div class="field"><label>E-mail</label><input id="loginEmail" type="email" autocomplete="username" placeholder="o seu e-mail"></div>
+      <div class="field"><label>Senha</label><input id="loginPass" type="password" autocomplete="current-password" placeholder="a sua senha"></div>
+      <button class="btn primary" id="loginBtn">Entrar</button>
+      <button class="linkbtn" id="linkRec">Esqueci-me da password</button>
+    </div>
+
+    <div class="pane" id="paneRec">
+      <div class="field"><label>E-mail da sua conta</label><input id="recEmail" type="email" autocomplete="username" placeholder="o seu e-mail"></div>
+      <button class="btn primary" id="recBtn">Enviar link de recuperação</button>
+      <button class="linkbtn" id="linkVoltar">Voltar a entrar</button>
+    </div>
+
+    <div class="pane" id="paneNova">
+      <div class="field"><label>Nova password</label><input id="novaPass" type="password" autocomplete="new-password" placeholder="mínimo 12 caracteres"></div>
+      <div class="field"><label>Repetir a nova password</label><input id="novaPass2" type="password" autocomplete="new-password"></div>
+      <button class="btn primary" id="novaBtn">Guardar nova password</button>
+    </div>
     <div class="cloudtag">🔒 Dados cifrados e protegidos por conta</div>
   </div>
 </div>
@@ -328,6 +352,7 @@ window.CRM_CONFIG = {
   var CLOUD={on:false,client:null,user:null,timer:null};
   var cloudReadOk=false, pendenteSync=false;
   var ultimoGravado=null, versaoLocal=null, emConflito=false;   // A8 + A24
+  var emRecuperacao=false;                                      // A12
   function cloudInit(){
     var cfg=window.CRM_CONFIG;
     if(!cfg||!cfg.url||!cfg.key||!window.supabase) return false;
@@ -391,9 +416,62 @@ window.CRM_CONFIG = {
     idleT=setTimeout(function(){ CLOUD.client.auth.signOut().then(function(){ location.reload(); }); }, IDLE_MS); }
   document.addEventListener("pointerdown",armIdle);
   document.addEventListener("keydown",armIdle);
-  function loginErr(m){ var e=document.getElementById("loginErr"); e.textContent=m; e.classList.add("show"); }
+  function loginErr(m){ var e=document.getElementById("loginErr"); e.textContent=m; e.classList.add("show");
+    document.getElementById("loginOk").classList.remove("show"); }
+  function loginOk(m){ var e=document.getElementById("loginOk"); e.textContent=m; e.classList.add("show");
+    document.getElementById("loginErr").classList.remove("show"); }
+  function mostrarPainel(id){ ["paneLogin","paneRec","paneNova"].forEach(function(x){
+      var el=document.getElementById(x); if(el) el.classList.toggle("on", x===id); }); }
+  // O link de recuperacao chega no fragmento do URL e cria uma sessao valida.
+  // Detectamos de forma sincrona para o getSession() do arranque nao entrar na aplicacao.
+  function detectaRecuperacao(){
+    var h=(location.hash||"");
+    if(h.indexOf("type=recovery")>=0){ emRecuperacao=true; return true; }
+    return false;
+  }
   function showLogin(){ document.getElementById("login").classList.add("open"); }
   function hideLogin(){ document.getElementById("login").classList.remove("open"); }
+  // A12 - pedido de recuperacao e definicao da nova password
+  function ligarRecuperacao(){
+    var linkRec=document.getElementById("linkRec"), linkVoltar=document.getElementById("linkVoltar"),
+        recBtn=document.getElementById("recBtn"), novaBtn=document.getElementById("novaBtn");
+    if(!linkRec) return;
+    linkRec.addEventListener("click",function(){ mostrarPainel("paneRec");
+      document.getElementById("recEmail").value=document.getElementById("loginEmail").value; });
+    linkVoltar.addEventListener("click",function(){ mostrarPainel("paneLogin"); });
+
+    recBtn.addEventListener("click",function(){
+      var em=document.getElementById("recEmail").value.trim();
+      if(!em){ loginErr("Escreva o e-mail da sua conta."); return; }
+      recBtn.disabled=true; recBtn.textContent="A enviar…";
+      var destino=location.origin+location.pathname;
+      CLOUD.client.auth.resetPasswordForEmail(em,{redirectTo:destino}).then(function(){
+        // Mensagem NEUTRA: nunca revela se a conta existe. Igual em sucesso e em erro.
+        loginOk("Se existir uma conta com esse e-mail, enviámos um link de recuperação. Verifique também a pasta de spam.");
+        recBtn.textContent="Link enviado";
+        setTimeout(function(){ recBtn.disabled=false; recBtn.textContent="Enviar link de recuperação"; },60000);
+      }).catch(function(){
+        loginOk("Se existir uma conta com esse e-mail, enviámos um link de recuperação. Verifique também a pasta de spam.");
+        setTimeout(function(){ recBtn.disabled=false; recBtn.textContent="Enviar link de recuperação"; },60000);
+      });
+    });
+
+    novaBtn.addEventListener("click",function(){
+      var a=document.getElementById("novaPass").value, b=document.getElementById("novaPass2").value;
+      if(a.length<12){ loginErr("A password tem de ter pelo menos 12 caracteres."); return; }
+      if(a!==b){ loginErr("As duas passwords não coincidem."); return; }
+      novaBtn.disabled=true; novaBtn.textContent="A guardar…";
+      CLOUD.client.auth.updateUser({password:a}).then(function(r){
+        novaBtn.disabled=false; novaBtn.textContent="Guardar nova password";
+        if(r.error){ loginErr("Não foi possível definir a password. O link pode ter expirado — peça outro."); return; }
+        try{ history.replaceState(null,"",location.pathname); }catch(e){}   // limpar o token do URL
+        CLOUD.client.auth.signOut().then(function(){
+          emRecuperacao=false; mostrarPainel("paneLogin");
+          loginOk("Password alterada. Já pode entrar com a nova password.");
+        });
+      });
+    });
+  }
   function cloudFetch(){
     CLOUD.client.from("crm_dados").select("dados,versao").eq("user_id",CLOUD.user.id).maybeSingle()
       .then(function(r){
@@ -422,6 +500,14 @@ window.CRM_CONFIG = {
   function cloudBoot(){
     var rb=document.getElementById("resetBtn"); if(rb) rb.style.display="none";  // A17
     showLogin();
+    detectaRecuperacao();
+    // O evento pode chegar depois do arranque: o supabase-js processa o fragmento de forma assincrona.
+    CLOUD.client.auth.onAuthStateChange(function(evt){
+      if(evt==="PASSWORD_RECOVERY"){ emRecuperacao=true; showLogin(); mostrarPainel("paneNova");
+        loginOk("Defina a sua nova password."); }
+    });
+    if(emRecuperacao){ mostrarPainel("paneNova"); loginOk("Defina a sua nova password."); }
+    ligarRecuperacao();
     var btn=document.getElementById("loginBtn");
     var tenta=function(){
       var em=document.getElementById("loginEmail").value.trim();
@@ -437,6 +523,7 @@ window.CRM_CONFIG = {
     btn.addEventListener("click",tenta);
     document.getElementById("loginPass").addEventListener("keydown",function(e){ if(e.key==="Enter") tenta(); });
     CLOUD.client.auth.getSession().then(function(r){
+      if(emRecuperacao) return;                    // A12: nao entrar na app durante a recuperacao
       if(r.data&&r.data.session){ CLOUD.user=r.data.session.user; cloudFetch(); }
     });
   }
