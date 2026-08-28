@@ -1,0 +1,20 @@
+# Exportações e cópias de segurança do CRM — NUNCA versionar (dados clínicos)
+crm-ivana-backup*.json
+*backup*.json
+*.dump
+*.sql
+*.sql.gz
+
+# Segredos
+.env
+.env.*
+
+# Sistema / editores
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Relatório de auditoria — não publicar em repositório público
+AUDITORIA-SEGURANCA.md
