@@ -307,6 +307,11 @@ window.CRM_CONFIG = {
     <div class="pane" id="paneNova">
       <div class="field"><label>Nova password</label><input id="novaPass" type="password" autocomplete="new-password" placeholder="mínimo 12 caracteres"></div>
       <div class="field"><label>Repetir a nova password</label><input id="novaPass2" type="password" autocomplete="new-password"></div>
+      <div style="font-size:.76rem;color:var(--ink-soft);text-align:left;line-height:1.5;margin:-4px 0 12px">
+        💡 Sugestão: use <b>quatro palavras sem relação entre si</b> — por exemplo
+        <i>janela-cavalo-tinta-verao</i>. É fácil de escrever no telemóvel, difícil de adivinhar,
+        e não precisa de ficar num papel. Guarde-a no gestor de passwords do seu telemóvel.
+      </div>
       <button class="btn primary" id="novaBtn">Guardar nova password</button>
     </div>
     <div class="cloudtag">🔒 Dados cifrados e protegidos por conta</div>
@@ -465,9 +470,11 @@ window.CRM_CONFIG = {
         novaBtn.disabled=false; novaBtn.textContent="Guardar nova password";
         if(r.error){ loginErr("Não foi possível definir a password. O link pode ter expirado — peça outro."); return; }
         try{ history.replaceState(null,"",location.pathname); }catch(e){}   // limpar o token do URL
-        CLOUD.client.auth.signOut().then(function(){
+        // Ambito GLOBAL: quem pede recuperacao pode estar a reagir a um acesso indevido.
+        // Mudar a password nao expulsa uma sessao de terceiro; terminar todas as sessoes expulsa.
+        CLOUD.client.auth.signOut({scope:"global"}).then(function(){
           emRecuperacao=false; mostrarPainel("paneLogin");
-          loginOk("Password alterada. Já pode entrar com a nova password.");
+          loginOk("Password alterada e todas as sessões terminadas, em todos os dispositivos. Já pode entrar com a nova password.");
         });
       });
     });
@@ -1011,7 +1018,7 @@ window.CRM_CONFIG = {
   function fmtKB(b){ return b<1024*1024 ? Math.round(b/1024)+" KB" : (b/1024/1024).toFixed(1)+" MB"; }
   function anexoRow(pid,sid,tipo,label,anexo){
     var inputId="an_"+tipo+"_"+sid;
-    var input='<input id="'+inputId+'" type="file" accept="application/pdf,image/*" style="display:none" '+
+    var input='<input id="'+inputId+'" type="file" accept="application/pdf,image/jpeg,image/png,image/webp" style="display:none" '+
       'onchange="APP.anexarComprovativo(\''+pid+'\',\''+sid+'\',\''+tipo+'\',this)">';
     if(anexo){
       var isImg=/^image\//.test(anexo.tipoFich||"");
@@ -1061,9 +1068,22 @@ window.CRM_CONFIG = {
   APP.realizada=function(pid,sid){ var r=find(pid,sid); marcarRealizada(r.p,r.s); if(state.currentPatient)renderDetalhe(); };
   // ---- comprovativo de pagamento (PDF ou imagem) ----
   var ANEXO_MAX=8*1024*1024; // 8 MB
+  // A9: lista branca de tipos. O accept do input e so um filtro de interface, nao validacao.
+  var TIPOS_OK={"application/pdf":1,"image/jpeg":1,"image/png":1,"image/webp":1};
+  function tipoSeguro(t){ return TIPOS_OK[t] ? t : null; }
+  function dataUriParaBlob(uri,tipo){
+    try{
+      var i=uri.indexOf(","); if(i<0) return null;
+      var b64=uri.slice(0,i).indexOf("base64")>=0, corpo=uri.slice(i+1);
+      var bin=b64?atob(corpo):decodeURIComponent(corpo);
+      var arr=new Uint8Array(bin.length);
+      for(var k=0;k<bin.length;k++) arr[k]=bin.charCodeAt(k);
+      return new Blob([arr],{type:tipo});                 // tipo vem da lista branca, nao do guardado
+    }catch(e){ return null; }
+  }
   function processarComprovativo(pid,sid,tipo,f){
     if(!f) return;
-    if(!/^application\/pdf$|^image\//.test(f.type)){ toast("Anexe um ficheiro PDF ou imagem"); return; }
+    if(!tipoSeguro(f.type)){ toast("Só é possível anexar PDF, JPEG, PNG ou WEBP"); return; }
     if(f.size>ANEXO_MAX){ toast("Ficheiro grande demais (máximo 8 MB)"); return; }
     var reader=new FileReader();
     reader.onload=function(){
@@ -1082,9 +1102,15 @@ window.CRM_CONFIG = {
   APP.dz=function(e,on){ e.preventDefault(); if(e.currentTarget) e.currentTarget.classList.toggle("drag",!!on); };
   APP.verComprovativo=function(pid,sid,tipo){
     var r=find(pid,sid); var a=r.s.pagamento.anexos&&r.s.pagamento.anexos[tipo]; if(!a) return;
-    try{ var w=window.open(a.dados,"_blank"); if(!w) throw new Error("bloqueado"); }
-    catch(e){ var l=document.createElement("a"); l.href=a.dados; l.download=a.nome||"comprovativo";
+    var t=tipoSeguro(a.tipoFich);      // A9: validar tambem no momento de MOSTRAR
+    if(!t){ toast("Tipo de ficheiro não suportado — não é possível abrir com segurança"); return; }
+    var blob=dataUriParaBlob(a.dados,t);
+    if(!blob){ toast("Não foi possível abrir o comprovativo"); return; }
+    var url=URL.createObjectURL(blob);
+    try{ var w=window.open(url,"_blank"); if(!w) throw new Error("bloqueado"); }
+    catch(e){ var l=document.createElement("a"); l.href=url; l.download=a.nome||"comprovativo";
       document.body.appendChild(l); l.click(); l.remove(); }
+    setTimeout(function(){ try{ URL.revokeObjectURL(url); }catch(e){} },60000);
   };
   APP.removerComprovativo=function(pid,sid,tipo){
     var r=find(pid,sid); if(r.s.pagamento.anexos) r.s.pagamento.anexos[tipo]=null;
