@@ -18,3 +18,7 @@ Thumbs.db
 
 # Relatório de auditoria — não publicar em repositório público
 AUDITORIA-SEGURANCA.md
+
+# Documentos internos — entrega por canal cifrado
+SECURITY.md
+TERMO-DE-ENTREGA-*.md
