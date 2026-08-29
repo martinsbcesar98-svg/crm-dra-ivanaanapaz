@@ -362,7 +362,7 @@ window.CRM_CONFIG = {
     var cfg=window.CRM_CONFIG;
     if(!cfg||!cfg.url||!cfg.key||!window.supabase) return false;
     try{ CLOUD.client=window.supabase.createClient(cfg.url,cfg.key); CLOUD.on=true; return true; }
-    catch(e){ return false; }
+    catch(e){ CLOUD.on=false; CLOUD.client=null; return false; }   // nao deixar estado meio-configurado
   }
   // Invariante: nunca escrever um objecto completo que nao veio de uma leitura bem sucedida.
   function cloudUpsert(){
@@ -1284,14 +1284,16 @@ window.CRM_CONFIG = {
   },true);
 
   // ============ ARRANQUE ============
-  if(window.CRM_CONFIG && !window.supabase){
-    // A23: configurado para a nuvem mas a biblioteca nao carregou.
-    // Falhar FECHADO: nunca abrir sem autenticacao nem escrever dados no disco.
-    document.getElementById("login").classList.add("open");
-    loginErr("Falha ao carregar um componente da aplica\u00e7\u00e3o. Recarregue a p\u00e1gina. Se persistir, contacte o suporte.");
-    document.getElementById("loginBtn").disabled=true;
-  } else if(cloudInit()){
-    cloudBoot();                      // online: login primeiro, depois dados da nuvem
+  if(window.CRM_CONFIG){
+    // A23: configurado para a nuvem. QUALQUER falha de inicializacao fecha a porta --
+    // nunca abrir sem autenticacao nem escrever dados clinicos no disco.
+    if(!window.supabase || !cloudInit()){
+      document.getElementById("login").classList.add("open");
+      loginErr("Falha ao carregar um componente da aplica\u00e7\u00e3o. Recarregue a p\u00e1gina. Se persistir, contacte o suporte.");
+      document.getElementById("loginBtn").disabled=true;
+    } else {
+      cloudBoot();                    // online: login primeiro, depois dados da nuvem
+    }
   } else {
     if(!load()){ loading=true; seed(); loading=false; persist(); }
     updateBadges(); render("inicio"); // local: como sempre

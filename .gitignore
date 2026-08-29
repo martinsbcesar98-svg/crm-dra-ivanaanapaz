@@ -6,6 +6,7 @@ crm-ivana-backup*.json
 *.sql.gz
 
 # Segredos
+*.env
 .env
 .env.*
 
