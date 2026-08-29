@@ -10,6 +10,10 @@ crm-ivana-backup*.json
 .env
 .env.*
 
+# Dependências de ferramentas (nunca versionar)
+node_modules/
+package-lock.json
+
 # Sistema / editores
 .DS_Store
 Thumbs.db
